@@ -2,10 +2,14 @@ import os
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 import sqlite3
+import io
+import matplotlib
+matplotlib.use('Agg') # Нужно для работы графиков на сервере без графического интерфейса
+import matplotlib.pyplot as plt
 import telebot
 from telebot import types
 
-# 1. Мини-веб-сервер для Render (занимает порт, чтобы сервис не выдавал ошибку)
+# 1. Мини-веб-сервер для Render (занимает порт)
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -21,7 +25,7 @@ server_thread = threading.Thread(target=run_server)
 server_thread.daemon = True
 server_thread.start()
 
-# 2. Код вашего финансового бота
+# 2. Настройка бота
 TOKEN = '8566395295:AAHdElzCClxH_XxveYdN1DJ8XhmD0MXwQWo'
 bot = telebot.TeleBot(TOKEN)
 
@@ -64,10 +68,11 @@ def start(message):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     btn_balance = types.KeyboardButton('💰 Баланс')
     btn_history = types.KeyboardButton('📜 История трат')
+    btn_stats = types.KeyboardButton('📊 Статистика')
     btn_add = types.KeyboardButton('➕ Добавить доход')
     btn_sub = types.KeyboardButton('➖ Списать расход')
-    markup.add(btn_balance, btn_history, btn_add, btn_sub)
-    bot.send_message(message.chat.id, 'Привет! Я твой бот-финансист. Выбери нужное действие:', reply_markup=markup)
+    markup.add(btn_balance, btn_history, btn_stats, btn_add, btn_sub)
+    bot.send_message(message.chat.id, 'Привет! Я твой обновленный бот-финансист с диаграммами. Выбери действие:', reply_markup=markup)
 
 @bot.message_handler(func=lambda msg: msg.text == '💰 Баланс')
 def show_balance(message):
@@ -93,6 +98,47 @@ def show_history(message):
         response += f'{sign} **{amount} руб.** — {comment if comment else "Без описания"} _({date})_\n'
         
     bot.send_message(message.chat.id, response, parse_mode='Markdown')
+
+# Функция генерации круговой диаграммы
+@bot.message_handler(func=lambda msg: msg.text == '📊 Статистика')
+def show_statistics(message):
+    user_id = message.from_user.id
+    conn = sqlite3.connect('finance.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT type, SUM(amount) FROM transactions WHERE user_id = ? GROUP BY type', (user_id,))
+    data = cursor.fetchall()
+    conn.close()
+    
+    if not data:
+        bot.send_message(message.chat.id, '📊 У вас пока недостаточно данных для построения диаграммы.')
+        return
+        
+    labels = []
+    values = []
+    colors = []
+    
+    for t_type, total in data:
+        if t_type == 'income':
+            labels.append('Доходы')
+            colors.append('#2ecc71')
+        else:
+            labels.append('Расходы')
+            colors.append('#e74c3c')
+        values.append(total)
+        
+    # Создаем круговую диаграмму через Matplotlib
+    fig, ax = plt.subplots(figsize=(5, 5))
+    ax.pie(values, labels=labels, autopct='%1.1f%%', startangle=90, colors=colors, textprops={'fontsize': 12, 'weight': 'bold'})
+    ax.axis('equal')
+    ax.set_title('Соотношение доходов и расходов', fontsize=14, pad=20)
+    
+    # Сохраняем картинку в оперативную память
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', bbox_inches='tight')
+    buf.seek(0)
+    plt.close(fig)
+    
+    bot.send_photo(message.chat.id, buf, caption='📊 **Ваша финансовая аналитика:**', parse_mode='Markdown')
 
 user_states = {}
 
@@ -125,5 +171,5 @@ def save_transaction(message):
     except ValueError:
         bot.send_message(message.chat.id, '❌ Неверный формат. Введите сумму числом (например: `1500 Продукты`).', parse_mode='Markdown')
 
-print('Бот и веб-сервер запущены...')
+print('Бот с поддержкой графиков запущен...')
 bot.infinity_polling()
